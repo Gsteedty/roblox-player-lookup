@@ -116,92 +116,138 @@ async function getGroups(userId) {
 
 async function getFriends(userId) {
 
-    const result = await getJSON(
-        `https://friends.roblox.com/v1/users/${userId}/friends?limit=100&sortOrder=Asc`
-    );
+    const allFriends = [];
 
-    if (
-        !result.available ||
-        !result.data
-    ) {
-        return result;
-    }
+    let cursor = null;
+    let pages = 0;
 
-    const rawFriends =
-        Array.isArray(result.data.data)
-            ? result.data.data
-            : [];
+    // Safety limit so a broken cursor cannot loop forever.
+    const MAX_PAGES = 50;
 
-    // Resolve missing names from the Users API.
-    // Done concurrently so 100 friends don't take forever.
-    const normalizedFriends =
-        await Promise.all(
+    while (pages < MAX_PAGES) {
 
-            rawFriends
-                .slice(0, 100)
-                .map(async (friend) => {
+        pages++;
 
-                    const friendId =
-                        Number(friend.id);
+        let url =
+            `https://friends.roblox.com/v1/users/${userId}/friends?limit=100&sortOrder=Asc`;
 
-                    if (
-                        !Number.isInteger(friendId) ||
-                        friendId <= 0
-                    ) {
-                        return null;
-                    }
+        if (cursor) {
 
-                    let username =
-                        friend.name ||
-                        friend.username ||
-                        friend.userName ||
-                        null;
+            url +=
+                `&cursor=${encodeURIComponent(cursor)}`;
+        }
 
-                    let displayName =
-                        friend.displayName ||
-                        friend.display_name ||
-                        null;
+        const result =
+            await getJSON(url);
 
-                    // If the Friends API did not give
-                    // us the names, look them up directly.
-                    if (
-                        !username ||
-                        !displayName
-                    ) {
+        if (
+            !result.available ||
+            !result.data
+        ) {
 
-                        const userResult =
-                            await getUser(friendId);
+            if (pages === 1) {
+                return result;
+            }
+
+            break;
+        }
+
+        const rawFriends =
+            Array.isArray(result.data.data)
+                ? result.data.data
+                : [];
+
+        // Resolve names concurrently.
+        const normalizedFriends =
+            await Promise.all(
+
+                rawFriends.map(
+                    async (friend) => {
+
+                        const friendId =
+                            Number(friend.id);
 
                         if (
-                            userResult.available &&
-                            userResult.data
+                            !Number.isInteger(friendId) ||
+                            friendId <= 0
+                        ) {
+                            return null;
+                        }
+
+                        let username =
+                            friend.name ||
+                            friend.username ||
+                            friend.userName ||
+                            null;
+
+                        let displayName =
+                            friend.displayName ||
+                            friend.display_name ||
+                            null;
+
+                        // Some responses may already contain
+                        // names. Only call Users API when needed.
+                        if (
+                            !username ||
+                            !displayName
                         ) {
 
-                            username =
-                                username ||
-                                userResult.data.name ||
-                                null;
+                            const userResult =
+                                await getUser(friendId);
 
-                            displayName =
-                                displayName ||
-                                userResult.data.displayName ||
-                                null;
+                            if (
+                                userResult.available &&
+                                userResult.data
+                            ) {
+
+                                username =
+                                    username ||
+                                    userResult.data.name ||
+                                    null;
+
+                                displayName =
+                                    displayName ||
+                                    userResult.data.displayName ||
+                                    null;
+                            }
                         }
+
+                        return {
+
+                            id:
+                                friendId,
+
+                            name:
+                                username,
+
+                            displayName:
+                                displayName
+                        };
                     }
+                )
+            );
 
-                    return {
+        for (
+            const friend
+            of normalizedFriends
+        ) {
 
-                        id:
-                            friendId,
+            if (friend) {
+                allFriends.push(friend);
+            }
+        }
 
-                        name:
-                            username,
+        cursor =
+            result.data.nextPageCursor || null;
 
-                        displayName:
-                            displayName
-                    };
-                })
-        );
+        if (!cursor) {
+            break;
+        }
+    }
+
+    console.log(
+        `Loaded ${allFriends.length} friends for ${userId} across ${pages} page(s).`
+    );
 
     return {
 
@@ -209,22 +255,18 @@ async function getFriends(userId) {
             true,
 
         status:
-            result.status,
+            200,
 
         data: {
 
-            previousPageCursor:
-                result.data.previousPageCursor ||
-                null,
-
-            nextPageCursor:
-                result.data.nextPageCursor ||
-                null,
-
             data:
-                normalizedFriends.filter(
-                    friend => friend !== null
-                )
+                allFriends,
+
+            total:
+                allFriends.length,
+
+            pages:
+                pages
         }
     };
 }
@@ -705,10 +747,6 @@ async function trackUser(userId) {
     const online =
         isOnline(current);
 
-    //==================================================
-    // ONLINE
-    //==================================================
-
     if (online) {
 
         const now =
@@ -735,12 +773,6 @@ async function trackUser(userId) {
                 true
         };
     }
-
-    //==================================================
-    // OFFLINE
-    //
-    // Keep previous last_online.
-    //==================================================
 
     await saveOfflinePresence(
         userId
@@ -913,7 +945,7 @@ app.get(
                 "Roblox Player Lookup",
 
             version:
-                "6.0"
+                "7.0"
         });
     }
 );
@@ -971,14 +1003,9 @@ app.get(
 
         try {
 
-            // Register for permanent presence monitoring.
             await registerUser(
                 userId
             );
-
-            //==================================================
-            // FETCH PUBLIC DATA
-            //==================================================
 
             const [
                 user,
@@ -1064,18 +1091,10 @@ app.get(
                 });
             }
 
-            //==================================================
-            // PRESENCE TRACKING
-            //==================================================
-
             const tracked =
                 await trackUser(
                     userId
                 );
-
-            //==================================================
-            // RESPONSE
-            //==================================================
 
             return res.json({
 
@@ -1163,10 +1182,6 @@ app.get(
                     data:
                         groups.data
                 },
-
-                //==================================================
-                // FRIENDS
-                //==================================================
 
                 friends: {
 
@@ -1282,7 +1297,7 @@ app.listen(
         );
 
         console.log(
-            "ROBLOX PLAYER LOOKUP v6"
+            "ROBLOX PLAYER LOOKUP v7"
         );
 
         console.log(
@@ -1294,7 +1309,11 @@ app.listen(
         );
 
         console.log(
-            "Friends API + name resolution enabled."
+            "Friends pagination enabled."
+        );
+
+        console.log(
+            "Friend name resolution enabled."
         );
 
         console.log(
