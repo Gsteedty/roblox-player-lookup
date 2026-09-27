@@ -15,12 +15,9 @@ let monitoring = false;
 //==================================================
 
 async function getJSON(url, options = {}) {
-
     try {
-
         const response = await fetch(url, {
             ...options,
-
             headers: {
                 "Content-Type": "application/json",
                 ...(options.headers || {})
@@ -44,7 +41,6 @@ async function getJSON(url, options = {}) {
         };
 
     } catch (error) {
-
         console.error("Roblox API error:", error);
 
         return {
@@ -60,7 +56,6 @@ async function getJSON(url, options = {}) {
 //==================================================
 
 async function getUser(userId) {
-
     return getJSON(
         `https://users.roblox.com/v1/users/${userId}`
     );
@@ -71,7 +66,6 @@ async function getUser(userId) {
 //==================================================
 
 async function getAvatar(userId) {
-
     return getJSON(
         `https://avatar.roblox.com/v1/users/${userId}/avatar`
     );
@@ -82,7 +76,6 @@ async function getAvatar(userId) {
 //==================================================
 
 async function getCurrentlyWearing(userId) {
-
     return getJSON(
         `https://avatar.roblox.com/v1/users/${userId}/currently-wearing`
     );
@@ -93,7 +86,6 @@ async function getCurrentlyWearing(userId) {
 //==================================================
 
 async function getOutfits(userId) {
-
     return getJSON(
         `https://avatar.roblox.com/v2/avatar/users/${userId}/outfits?itemsPerPage=100`
     );
@@ -104,7 +96,6 @@ async function getOutfits(userId) {
 //==================================================
 
 async function getGroups(userId) {
-
     return getJSON(
         `https://groups.roblox.com/v2/users/${userId}/groups/roles`
     );
@@ -120,11 +111,25 @@ async function getFriends(userId) {
 
     let cursor = null;
     let pages = 0;
+    let complete = true;
 
-    // Safety limit so a broken cursor cannot loop forever.
-    const MAX_PAGES = 50;
+    const seenCursors = new Set();
 
-    while (pages < MAX_PAGES) {
+    while (true) {
+
+        if (cursor) {
+
+            if (seenCursors.has(cursor)) {
+                console.error(
+                    `Friend cursor repeated for ${userId}.`
+                );
+
+                complete = false;
+                break;
+            }
+
+            seenCursors.add(cursor);
+        }
 
         pages++;
 
@@ -132,7 +137,6 @@ async function getFriends(userId) {
             `https://friends.roblox.com/v1/users/${userId}/friends?limit=100&sortOrder=Asc`;
 
         if (cursor) {
-
             url +=
                 `&cursor=${encodeURIComponent(cursor)}`;
         }
@@ -145,10 +149,15 @@ async function getFriends(userId) {
             !result.data
         ) {
 
+            console.error(
+                `Friends API failed for ${userId}: HTTP ${result.status}`
+            );
+
             if (pages === 1) {
                 return result;
             }
 
+            complete = false;
             break;
         }
 
@@ -157,10 +166,8 @@ async function getFriends(userId) {
                 ? result.data.data
                 : [];
 
-        // Resolve names concurrently.
         const normalizedFriends =
             await Promise.all(
-
                 rawFriends.map(
                     async (friend) => {
 
@@ -185,8 +192,8 @@ async function getFriends(userId) {
                             friend.display_name ||
                             null;
 
-                        // Some responses may already contain
-                        // names. Only call Users API when needed.
+                        // Roblox's friends endpoint can sometimes
+                        // return the ID without the username.
                         if (
                             !username ||
                             !displayName
@@ -213,15 +220,9 @@ async function getFriends(userId) {
                         }
 
                         return {
-
-                            id:
-                                friendId,
-
-                            name:
-                                username,
-
-                            displayName:
-                                displayName
+                            id: friendId,
+                            name: username,
+                            displayName: displayName
                         };
                     }
                 )
@@ -237,12 +238,14 @@ async function getFriends(userId) {
             }
         }
 
-        cursor =
+        const nextCursor =
             result.data.nextPageCursor || null;
 
-        if (!cursor) {
+        if (!nextCursor) {
             break;
         }
+
+        cursor = nextCursor;
     }
 
     console.log(
@@ -250,23 +253,21 @@ async function getFriends(userId) {
     );
 
     return {
+        available: true,
 
-        available:
-            true,
-
-        status:
-            200,
+        status: 200,
 
         data: {
-
-            data:
-                allFriends,
+            data: allFriends,
 
             total:
                 allFriends.length,
 
             pages:
-                pages
+                pages,
+
+            complete:
+                complete
         }
     };
 }
@@ -322,7 +323,7 @@ async function getCreatedGames(userId) {
 async function getFavoriteGames(userId) {
 
     return getJSON(
-        `https://games.roblox.com/v2/users/${userId}/favorite/games?sortOrder=Asc&limit=50`
+        `https://games.roblox.com/v2/users/${userId}/favorite/games?sortOrder=Desc&limit=50`
     );
 }
 
@@ -945,7 +946,7 @@ app.get(
                 "Roblox Player Lookup",
 
             version:
-                "7.0"
+                "7.1"
         });
     }
 );
@@ -1297,7 +1298,7 @@ app.listen(
         );
 
         console.log(
-            "ROBLOX PLAYER LOOKUP v7"
+            "ROBLOX PLAYER LOOKUP v7.1"
         );
 
         console.log(
@@ -1309,11 +1310,15 @@ app.listen(
         );
 
         console.log(
-            "Friends pagination enabled."
+            "Full friends pagination enabled."
         );
 
         console.log(
             "Friend name resolution enabled."
+        );
+
+        console.log(
+            "Favorite experiences fixed."
         );
 
         console.log(
