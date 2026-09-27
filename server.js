@@ -12,6 +12,12 @@ const supabase = createClient(
 );
 
 //==================================================
+// CONFIG
+//==================================================
+
+const MONITOR_INTERVAL = 2 * 60 * 1000;
+
+//==================================================
 // ROBLOX API HELPER
 //==================================================
 
@@ -140,6 +146,10 @@ async function getThumbnails(userId) {
     return results;
 }
 
+//==================================================
+// ROBLOX PRESENCE
+//==================================================
+
 async function getPresence(userId) {
     return getJSON(
         "https://presence.roblox.com/v1/presence/users",
@@ -157,8 +167,36 @@ async function getPresence(userId) {
     );
 }
 
+function getPresenceObject(presence) {
+    if (
+        !presence ||
+        !presence.data ||
+        !Array.isArray(presence.data.userPresences) ||
+        !presence.data.userPresences[0]
+    ) {
+        return null;
+    }
+
+    return presence.data.userPresences[0];
+}
+
+function isOnline(presenceObject) {
+    if (!presenceObject) {
+        return false;
+    }
+
+    const type =
+        presenceObject.userPresenceType;
+
+    return (
+        type === 1 ||
+        type === 2 ||
+        type === 3
+    );
+}
+
 //==================================================
-// DATABASE
+// SUPABASE PRESENCE DATABASE
 //==================================================
 
 async function getSavedPresence(userId) {
@@ -189,89 +227,124 @@ async function getSavedPresence(userId) {
     }
 }
 
-async function savePresence(
-    userId,
-    status,
-    lastOnline
-) {
+//--------------------------------------------------
+// Register user for permanent monitoring
+//--------------------------------------------------
+
+async function registerUser(userId) {
     try {
-        const { error } = await supabase
-            .from("presence_history")
-            .upsert({
-                user_id: userId,
-                last_online: lastOnline,
-                last_status: status,
-                updated_at: new Date().toISOString()
-            });
+        const existing =
+            await getSavedPresence(userId);
+
+        if (existing) {
+            return existing;
+        }
+
+        const { data, error } =
+            await supabase
+                .from("presence_history")
+                .insert({
+                    user_id: userId,
+                    last_online: null,
+                    last_status: "Unknown",
+                    updated_at:
+                        new Date().toISOString()
+                })
+                .select()
+                .maybeSingle();
 
         if (error) {
             console.error(
-                "Supabase write error:",
+                "Supabase register error:",
                 error
             );
+
+            return null;
         }
+
+        console.log(
+            `Tracking user ${userId}`
+        );
+
+        return data;
     } catch (error) {
         console.error(
-            "Presence save error:",
+            "Register user error:",
             error
         );
-    }
-}
 
-async function setOffline(userId) {
-    try {
-        const { error } = await supabase
-            .from("presence_history")
-            .update({
-                last_status: "Offline",
-                updated_at: new Date().toISOString()
-            })
-            .eq("user_id", userId);
-
-        if (error) {
-            console.error(
-                "Supabase offline error:",
-                error
-            );
-        }
-    } catch (error) {
-        console.error(
-            "Offline update error:",
-            error
-        );
-    }
-}
-
-//==================================================
-// PRESENCE PARSER
-//==================================================
-
-function getPresenceObject(presence) {
-    if (
-        !presence ||
-        !presence.data ||
-        !presence.data.userPresences ||
-        !presence.data.userPresences[0]
-    ) {
         return null;
     }
-
-    return presence.data.userPresences[0];
 }
 
-function isOnline(presenceObject) {
-    if (!presenceObject) {
-        return false;
+//--------------------------------------------------
+// Save online observation
+//--------------------------------------------------
+
+async function saveOnlinePresence(
+    userId,
+    timestamp
+) {
+    try {
+        const { error } =
+            await supabase
+                .from("presence_history")
+                .upsert({
+                    user_id: userId,
+
+                    last_online:
+                        timestamp,
+
+                    last_status:
+                        "Online",
+
+                    updated_at:
+                        new Date().toISOString()
+                });
+
+        if (error) {
+            console.error(
+                "Supabase online save error:",
+                error
+            );
+        }
+    } catch (error) {
+        console.error(
+            "Online presence save error:",
+            error
+        );
     }
+}
 
-    const type =
-        presenceObject.userPresenceType;
+//--------------------------------------------------
+// Save offline status WITHOUT deleting last_online
+//--------------------------------------------------
 
-    return (
-        type === 1 ||
-        type === 2 ||
-        type === 3
-    );
+async function saveOfflinePresence(userId) {
+    try {
+        const { error } =
+            await supabase
+                .from("presence_history")
+                .update({
+                    last_status: "Offline",
+
+                    updated_at:
+                        new Date().toISOString()
+                })
+                .eq("user_id", userId);
+
+        if (error) {
+            console.error(
+                "Supabase offline update error:",
+                error
+            );
+        }
+    } catch (error) {
+        console.error(
+            "Offline presence error:",
+            error
+        );
+    }
 }
 
 //==================================================
@@ -279,18 +352,51 @@ function isOnline(presenceObject) {
 //==================================================
 
 async function trackUser(userId) {
+    // Make absolutely sure the user is registered.
+    await registerUser(userId);
+
     const presence =
         await getPresence(userId);
 
     if (!presence.available) {
-        return null;
+        const saved =
+            await getSavedPresence(userId);
+
+        return {
+            status:
+                saved?.last_status ||
+                "Unknown",
+
+            lastOnline:
+                saved?.last_online ||
+                null,
+
+            presence: null,
+
+            apiAvailable: false
+        };
     }
 
     const current =
         getPresenceObject(presence);
 
     if (!current) {
-        return null;
+        const saved =
+            await getSavedPresence(userId);
+
+        return {
+            status:
+                saved?.last_status ||
+                "Unknown",
+
+            lastOnline:
+                saved?.last_online ||
+                null,
+
+            presence: null,
+
+            apiAvailable: true
+        };
     }
 
     const online =
@@ -300,36 +406,46 @@ async function trackUser(userId) {
         const now =
             new Date().toISOString();
 
-        await savePresence(
+        await saveOnlinePresence(
             userId,
-            "Online",
             now
         );
 
         return {
             status: "Online",
+
             lastOnline: now,
-            presence: current
+
+            presence: current,
+
+            apiAvailable: true
         };
     }
 
-    await setOffline(userId);
+    // IMPORTANT:
+    // Do NOT overwrite last_online.
+    await saveOfflinePresence(
+        userId
+    );
 
     const saved =
         await getSavedPresence(userId);
 
     return {
         status: "Offline",
+
         lastOnline:
-            saved
-                ? saved.last_online
-                : null,
-        presence: current
+            saved?.last_online ||
+            null,
+
+        presence: current,
+
+        apiAvailable: true
     };
 }
 
 //==================================================
-// AUTOMATIC MONITOR
+// GET ALL USERS BEING TRACKED
 //==================================================
 
 async function getTrackedUsers() {
@@ -359,54 +475,90 @@ async function getTrackedUsers() {
     }
 }
 
-async function monitorTrackedUsers() {
-    const users =
-        await getTrackedUsers();
+//==================================================
+// BACKGROUND MONITOR
+//==================================================
 
-    if (users.length === 0) {
+let monitoring = false;
+
+async function monitorTrackedUsers() {
+    if (monitoring) {
+        console.log(
+            "Previous monitoring cycle still running."
+        );
+
         return;
     }
 
-    console.log(
-        `Monitoring ${users.length} tracked user(s)...`
-    );
+    monitoring = true;
 
-    for (const row of users) {
-        const userId =
-            Number(row.user_id);
+    try {
+        const users =
+            await getTrackedUsers();
 
-        try {
-            const result =
-                await trackUser(userId);
+        if (users.length === 0) {
+            console.log(
+                "No users currently registered for monitoring."
+            );
 
-            if (!result) {
+            return;
+        }
+
+        console.log(
+            `Monitoring ${users.length} tracked user(s)...`
+        );
+
+        for (const row of users) {
+            const userId =
+                Number(row.user_id);
+
+            if (
+                !Number.isInteger(userId) ||
+                userId <= 0
+            ) {
                 continue;
             }
 
-            console.log(
-                `User ${userId}: ${result.status}`
-            );
-        } catch (error) {
-            console.error(
-                `Monitor error for ${userId}:`,
-                error
-            );
+            try {
+                const result =
+                    await trackUser(userId);
+
+                console.log(
+                    `User ${userId}: ${result.status}` +
+                    (
+                        result.lastOnline
+                            ? ` | Last Online: ${result.lastOnline}`
+                            : ""
+                    )
+                );
+            } catch (error) {
+                console.error(
+                    `Monitor error for ${userId}:`,
+                    error
+                );
+            }
         }
+    } finally {
+        monitoring = false;
     }
 }
 
 //==================================================
-// START AUTOMATIC MONITOR
+// START MONITOR
 //==================================================
 
 setTimeout(
-    monitorTrackedUsers,
+    () => {
+        monitorTrackedUsers();
+    },
     10000
 );
 
 setInterval(
-    monitorTrackedUsers,
-    2 * 60 * 1000
+    () => {
+        monitorTrackedUsers();
+    },
+    MONITOR_INTERVAL
 );
 
 //==================================================
@@ -417,7 +569,7 @@ app.get("/", (req, res) => {
     res.json({
         status: "online",
         service: "Roblox Player Lookup",
-        version: "4.0"
+        version: "5.0"
     });
 });
 
@@ -443,6 +595,21 @@ app.get(
         }
 
         try {
+
+            //--------------------------------------------------
+            // Register immediately.
+            //
+            // This means the user stays tracked even after
+            // the Roblox game is closed.
+            //--------------------------------------------------
+
+            await registerUser(
+                userId
+            );
+
+            //--------------------------------------------------
+            // Fetch public Roblox information
+            //--------------------------------------------------
 
             const [
                 user,
@@ -510,31 +677,18 @@ app.get(
                 });
             }
 
-            // Track this user.
-            let tracked =
+            //--------------------------------------------------
+            // Update tracking
+            //--------------------------------------------------
+
+            const tracked =
                 await trackUser(
                     userId
                 );
 
-            // If tracking failed,
-            // fall back to saved data.
-            let saved =
-                await getSavedPresence(
-                    userId
-                );
-
-            if (!tracked && saved) {
-                tracked = {
-                    status:
-                        saved.last_status ||
-                        "Unknown",
-
-                    lastOnline:
-                        saved.last_online,
-
-                    presence: null
-                };
-            }
+            //--------------------------------------------------
+            // RESPONSE
+            //--------------------------------------------------
 
             res.json({
 
@@ -564,7 +718,8 @@ app.get(
                     data:
                         presence.data,
 
-                    tracked: tracked
+                    tracked:
+                        tracked
                 },
 
                 avatar: {
@@ -691,7 +846,7 @@ app.get(
 );
 
 //==================================================
-// START
+// START SERVER
 //==================================================
 
 app.listen(
@@ -699,354 +854,19 @@ app.listen(
     () => {
 
         console.log(
-            `Roblox Player Lookup v4 running on port ${PORT}`
+            "========================================"
+        );
+
+        console.log(
+            `Roblox Player Lookup v5 running on port ${PORT}`
+        );
+
+        console.log(
+            "Persistent background presence tracking enabled."
+        );
+
+        console.log(
+            "========================================"
         );
     }
-);async function getOutfits(userId) {
-    return getJSON(
-        `https://avatar.roblox.com/v2/avatar/users/${userId}/outfits?itemsPerPage=100`
-    );
-}
-
-async function getGroups(userId) {
-    return getJSON(
-        `https://groups.roblox.com/v2/users/${userId}/groups/roles`
-    );
-}
-
-async function getFriends(userId) {
-    return getJSON(
-        `https://friends.roblox.com/v1/users/${userId}/friends`
-    );
-}
-
-async function getFriendCount(userId) {
-    return getJSON(
-        `https://friends.roblox.com/v1/users/${userId}/friends/count`
-    );
-}
-
-async function getUsernameHistory(userId) {
-    return getJSON(
-        `https://users.roblox.com/v1/users/${userId}/username-history?limit=100&sortOrder=Desc`
-    );
-}
-
-async function getBadges(userId) {
-    return getJSON(
-        `https://accountinformation.roblox.com/v1/users/${userId}/roblox-badges`
-    );
-}
-
-async function getCreatedGames(userId) {
-    return getJSON(
-        `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&sortOrder=Asc&limit=50`
-    );
-}
-
-async function getFavoriteGames(userId) {
-    return getJSON(
-        `https://games.roblox.com/v2/users/${userId}/favorite/games?sortOrder=Asc&limit=50`
-    );
-}
-
-async function getThumbnails(userId) {
-    const urls = {
-        headshot:
-            `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png&isCircular=false`,
-
-        bust:
-            `https://thumbnails.roblox.com/v1/users/avatar-bust?userIds=${userId}&size=420x420&format=Png&isCircular=false`,
-
-        avatar:
-            `https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=720x720&format=Png&isCircular=false`
-    };
-
-    const results = {};
-
-    for (const [name, url] of Object.entries(urls)) {
-        results[name] = await getJSON(url);
-    }
-
-    return results;
-}
-
-async function getPresence(userId) {
-    return getJSON(
-        "https://presence.roblox.com/v1/presence/users",
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                userIds: [userId]
-            })
-        }
-    );
-}
-
-//==================================================
-// PRESENCE DATABASE
-//==================================================
-
-async function getSavedPresence(userId) {
-    const { data, error } = await supabase
-        .from("presence_history")
-        .select("*")
-        .eq("user_id", userId)
-        .maybeSingle();
-
-    if (error) {
-        console.error("Supabase read error:", error);
-        return null;
-    }
-
-    return data;
-}
-
-async function savePresence(userId, status, lastOnline) {
-    const { error } = await supabase
-        .from("presence_history")
-        .upsert({
-            user_id: userId,
-            last_online: lastOnline,
-            last_status: status,
-            updated_at: new Date().toISOString()
-        });
-
-    if (error) {
-        console.error("Supabase write error:", error);
-    }
-}
-
-function getPresenceObject(presence) {
-    if (
-        !presence ||
-        !presence.data ||
-        !presence.data.userPresences ||
-        !presence.data.userPresences[0]
-    ) {
-        return null;
-    }
-
-    return presence.data.userPresences[0];
-}
-
-async function trackPresence(userId, presence) {
-    const current = getPresenceObject(presence);
-
-    if (!current) {
-        return {
-            status: "Unknown",
-            lastOnline: null
-        };
-    }
-
-    const presenceType = current.userPresenceType;
-
-    const online =
-        presenceType === 1 ||
-        presenceType === 2 ||
-        presenceType === 3;
-
-    const saved = await getSavedPresence(userId);
-
-    let lastOnline = saved
-        ? saved.last_online
-        : null;
-
-    if (online) {
-        lastOnline = new Date().toISOString();
-
-        await savePresence(
-            userId,
-            "Online",
-            lastOnline
-        );
-    }
-
-    return {
-        status: online ? "Online" : "Offline",
-        lastOnline: lastOnline,
-        currentPresence: current
-    };
-}
-
-//==================================================
-// ROOT
-//==================================================
-
-app.get("/", (req, res) => {
-    res.json({
-        status: "online",
-        service: "Roblox Player Lookup",
-        version: "3.0"
-    });
-});
-
-//==================================================
-// PLAYER LOOKUP
-//==================================================
-
-app.get("/api/player/:userId", async (req, res) => {
-    const userId = Number(req.params.userId);
-
-    if (!Number.isInteger(userId) || userId <= 0) {
-        return res.status(400).json({
-            success: false,
-            error: "Invalid User ID."
-        });
-    }
-
-    try {
-        const [
-            user,
-            avatar,
-            currentlyWearing,
-            outfits,
-            groups,
-            friends,
-            friendCount,
-            usernameHistory,
-            badges,
-            createdGames,
-            favoriteGames,
-            thumbnails,
-            presence
-        ] = await Promise.all([
-            getUser(userId),
-            getAvatar(userId),
-            getCurrentlyWearing(userId),
-            getOutfits(userId),
-            getGroups(userId),
-            getFriends(userId),
-            getFriendCount(userId),
-            getUsernameHistory(userId),
-            getBadges(userId),
-            getCreatedGames(userId),
-            getFavoriteGames(userId),
-            getThumbnails(userId),
-            getPresence(userId)
-        ]);
-
-        if (!user.available || !user.data) {
-            return res.status(404).json({
-                success: false,
-                error: "Roblox user not found."
-            });
-        }
-
-        const trackedPresence =
-            await trackPresence(
-                userId,
-                presence
-            );
-
-        res.json({
-            success: true,
-
-            lookup: {
-                userId: userId,
-                retrievedAt: new Date().toISOString()
-            },
-
-            identity: {
-                available: user.available,
-                data: user.data
-            },
-
-            presence: {
-                available: presence.available,
-                data: presence.data,
-                tracked: trackedPresence
-            },
-
-            avatar: {
-                available: avatar.available,
-                data: avatar.data
-            },
-
-            currentlyWearing: {
-                available: currentlyWearing.available,
-                data: currentlyWearing.data
-            },
-
-            outfits: {
-                available: outfits.available,
-                data: outfits.data
-            },
-
-            groups: {
-                available: groups.available,
-                data: groups.data
-            },
-
-            friends: {
-                available: friends.available,
-                data: friends.data
-            },
-
-            friendCount: {
-                available: friendCount.available,
-                data: friendCount.data
-            },
-
-            usernameHistory: {
-                available: usernameHistory.available,
-                data: usernameHistory.data
-            },
-
-            badges: {
-                available: badges.available,
-                data: badges.data
-            },
-
-            createdExperiences: {
-                available: createdGames.available,
-                data: createdGames.data
-            },
-
-            favoriteExperiences: {
-                available: favoriteGames.available,
-                data: favoriteGames.data
-            },
-
-            thumbnails: thumbnails,
-
-            limitations: {
-                message:
-                    "Historical presence is based on observations recorded by this service."
-            }
-        });
-
-    } catch (error) {
-        console.error("Lookup error:", error);
-
-        res.status(500).json({
-            success: false,
-            error: "Unexpected lookup error."
-        });
-    }
-});
-
-//==================================================
-// HEALTH
-//==================================================
-
-app.get("/health", (req, res) => {
-    res.json({
-        online: true,
-        timestamp: new Date().toISOString()
-    });
-});
-
-//==================================================
-// START SERVER
-//==================================================
-
-app.listen(PORT, () => {
-    console.log(
-        `Roblox Player Lookup v3 running on port ${PORT}`
-    );
-});
+);
