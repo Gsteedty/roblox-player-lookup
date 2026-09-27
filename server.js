@@ -15,7 +15,9 @@ let monitoring = false;
 //==================================================
 
 async function getJSON(url, options = {}) {
+
     try {
+
         const response = await fetch(url, {
             ...options,
 
@@ -43,10 +45,7 @@ async function getJSON(url, options = {}) {
 
     } catch (error) {
 
-        console.error(
-            "Roblox API error:",
-            error
-        );
+        console.error("Roblox API error:", error);
 
         return {
             available: false,
@@ -57,10 +56,11 @@ async function getJSON(url, options = {}) {
 }
 
 //==================================================
-// ROBLOX USER
+// USER
 //==================================================
 
 async function getUser(userId) {
+
     return getJSON(
         `https://users.roblox.com/v1/users/${userId}`
     );
@@ -71,6 +71,7 @@ async function getUser(userId) {
 //==================================================
 
 async function getAvatar(userId) {
+
     return getJSON(
         `https://avatar.roblox.com/v1/users/${userId}/avatar`
     );
@@ -81,6 +82,7 @@ async function getAvatar(userId) {
 //==================================================
 
 async function getCurrentlyWearing(userId) {
+
     return getJSON(
         `https://avatar.roblox.com/v1/users/${userId}/currently-wearing`
     );
@@ -91,6 +93,7 @@ async function getCurrentlyWearing(userId) {
 //==================================================
 
 async function getOutfits(userId) {
+
     return getJSON(
         `https://avatar.roblox.com/v2/avatar/users/${userId}/outfits?itemsPerPage=100`
     );
@@ -101,6 +104,7 @@ async function getOutfits(userId) {
 //==================================================
 
 async function getGroups(userId) {
+
     return getJSON(
         `https://groups.roblox.com/v2/users/${userId}/groups/roles`
     );
@@ -113,7 +117,7 @@ async function getGroups(userId) {
 async function getFriends(userId) {
 
     const result = await getJSON(
-        `https://friends.roblox.com/v1/users/${userId}/friends`
+        `https://friends.roblox.com/v1/users/${userId}/friends?limit=100&sortOrder=Asc`
     );
 
     if (
@@ -128,39 +132,99 @@ async function getFriends(userId) {
             ? result.data.data
             : [];
 
+    // Resolve missing names from the Users API.
+    // Done concurrently so 100 friends don't take forever.
     const normalizedFriends =
-        rawFriends.map(friend => ({
+        await Promise.all(
 
-            id:
-                friend.id ??
-                null,
+            rawFriends
+                .slice(0, 100)
+                .map(async (friend) => {
 
-            name:
-                friend.name ??
-                null,
+                    const friendId =
+                        Number(friend.id);
 
-            displayName:
-                friend.displayName ??
-                null
-        }));
+                    if (
+                        !Number.isInteger(friendId) ||
+                        friendId <= 0
+                    ) {
+                        return null;
+                    }
+
+                    let username =
+                        friend.name ||
+                        friend.username ||
+                        friend.userName ||
+                        null;
+
+                    let displayName =
+                        friend.displayName ||
+                        friend.display_name ||
+                        null;
+
+                    // If the Friends API did not give
+                    // us the names, look them up directly.
+                    if (
+                        !username ||
+                        !displayName
+                    ) {
+
+                        const userResult =
+                            await getUser(friendId);
+
+                        if (
+                            userResult.available &&
+                            userResult.data
+                        ) {
+
+                            username =
+                                username ||
+                                userResult.data.name ||
+                                null;
+
+                            displayName =
+                                displayName ||
+                                userResult.data.displayName ||
+                                null;
+                        }
+                    }
+
+                    return {
+
+                        id:
+                            friendId,
+
+                        name:
+                            username,
+
+                        displayName:
+                            displayName
+                    };
+                })
+        );
 
     return {
-        available: true,
+
+        available:
+            true,
 
         status:
             result.status,
 
         data: {
+
             previousPageCursor:
-                result.data.previousPageCursor ??
+                result.data.previousPageCursor ||
                 null,
 
             nextPageCursor:
-                result.data.nextPageCursor ??
+                result.data.nextPageCursor ||
                 null,
 
             data:
-                normalizedFriends
+                normalizedFriends.filter(
+                    friend => friend !== null
+                )
         }
     };
 }
@@ -170,6 +234,7 @@ async function getFriends(userId) {
 //==================================================
 
 async function getFriendCount(userId) {
+
     return getJSON(
         `https://friends.roblox.com/v1/users/${userId}/friends/count`
     );
@@ -180,6 +245,7 @@ async function getFriendCount(userId) {
 //==================================================
 
 async function getUsernameHistory(userId) {
+
     return getJSON(
         `https://users.roblox.com/v1/users/${userId}/username-history?limit=100&sortOrder=Desc`
     );
@@ -190,6 +256,7 @@ async function getUsernameHistory(userId) {
 //==================================================
 
 async function getBadges(userId) {
+
     return getJSON(
         `https://accountinformation.roblox.com/v1/users/${userId}/roblox-badges`
     );
@@ -200,6 +267,7 @@ async function getBadges(userId) {
 //==================================================
 
 async function getCreatedGames(userId) {
+
     return getJSON(
         `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&sortOrder=Asc&limit=50`
     );
@@ -210,6 +278,7 @@ async function getCreatedGames(userId) {
 //==================================================
 
 async function getFavoriteGames(userId) {
+
     return getJSON(
         `https://games.roblox.com/v2/users/${userId}/favorite/games?sortOrder=Asc&limit=50`
     );
@@ -248,7 +317,7 @@ async function getThumbnails(userId) {
 }
 
 //==================================================
-// ROBLOX PRESENCE
+// PRESENCE
 //==================================================
 
 async function getPresence(userId) {
@@ -285,9 +354,7 @@ function getPresenceObject(presence) {
         return null;
     }
 
-    return (
-        presence.data.userPresences[0]
-    );
+    return presence.data.userPresences[0];
 }
 
 function isOnline(presenceObject) {
@@ -307,7 +374,7 @@ function isOnline(presenceObject) {
 }
 
 //==================================================
-// SUPABASE REST API
+// SUPABASE
 //==================================================
 
 async function supabaseRequest(
@@ -340,6 +407,7 @@ async function supabaseRequest(
                     ...options,
 
                     headers: {
+
                         "Content-Type":
                             "application/json",
 
@@ -360,15 +428,19 @@ async function supabaseRequest(
         let data = null;
 
         try {
+
             data =
                 text
                     ? JSON.parse(text)
                     : null;
+
         } catch {
+
             data = text;
         }
 
         return {
+
             available:
                 response.ok,
 
@@ -386,8 +458,11 @@ async function supabaseRequest(
         );
 
         return {
+
             available: false,
+
             status: 500,
+
             data: null
         };
     }
@@ -441,6 +516,7 @@ async function registerUser(userId) {
 
                 body:
                     JSON.stringify({
+
                         user_id:
                             Number(userId),
 
@@ -479,7 +555,7 @@ async function registerUser(userId) {
 }
 
 //==================================================
-// SAVE ONLINE PRESENCE
+// SAVE ONLINE
 //==================================================
 
 async function saveOnlinePresence(
@@ -495,6 +571,7 @@ async function saveOnlinePresence(
 
                 body:
                     JSON.stringify({
+
                         last_online:
                             timestamp,
 
@@ -518,7 +595,7 @@ async function saveOnlinePresence(
 }
 
 //==================================================
-// SAVE OFFLINE STATUS
+// SAVE OFFLINE
 //==================================================
 
 async function saveOfflinePresence(
@@ -533,6 +610,7 @@ async function saveOfflinePresence(
 
                 body:
                     JSON.stringify({
+
                         last_status:
                             "Offline",
 
@@ -553,7 +631,7 @@ async function saveOfflinePresence(
 }
 
 //==================================================
-// TRACK ONE USER
+// TRACK USER
 //==================================================
 
 async function trackUser(userId) {
@@ -568,7 +646,6 @@ async function trackUser(userId) {
         return null;
     }
 
-    // Make sure this user is permanently tracked.
     await registerUser(userId);
 
     const presence =
@@ -577,9 +654,7 @@ async function trackUser(userId) {
     if (!presence.available) {
 
         const saved =
-            await getSavedPresence(
-                userId
-            );
+            await getSavedPresence(userId);
 
         return {
 
@@ -591,9 +666,11 @@ async function trackUser(userId) {
                 saved?.last_online ||
                 null,
 
-            presence: null,
+            presence:
+                null,
 
-            apiAvailable: false
+            apiAvailable:
+                false
         };
     }
 
@@ -605,9 +682,7 @@ async function trackUser(userId) {
     if (!current) {
 
         const saved =
-            await getSavedPresence(
-                userId
-            );
+            await getSavedPresence(userId);
 
         return {
 
@@ -619,9 +694,11 @@ async function trackUser(userId) {
                 saved?.last_online ||
                 null,
 
-            presence: null,
+            presence:
+                null,
 
-            apiAvailable: true
+            apiAvailable:
+                true
         };
     }
 
@@ -629,7 +706,7 @@ async function trackUser(userId) {
         isOnline(current);
 
     //==================================================
-    // USER IS ONLINE
+    // ONLINE
     //==================================================
 
     if (online) {
@@ -660,10 +737,9 @@ async function trackUser(userId) {
     }
 
     //==================================================
-    // USER IS OFFLINE
+    // OFFLINE
     //
-    // IMPORTANT:
-    // Do NOT overwrite last_online.
+    // Keep previous last_online.
     //==================================================
 
     await saveOfflinePresence(
@@ -693,7 +769,7 @@ async function trackUser(userId) {
 }
 
 //==================================================
-// GET ALL TRACKED USERS
+// GET TRACKED USERS
 //==================================================
 
 async function getTrackedUsers() {
@@ -707,7 +783,6 @@ async function getTrackedUsers() {
         !result.available ||
         !Array.isArray(result.data)
     ) {
-
         return [];
     }
 
@@ -715,7 +790,7 @@ async function getTrackedUsers() {
 }
 
 //==================================================
-// BACKGROUND PRESENCE MONITOR
+// BACKGROUND MONITOR
 //==================================================
 
 async function monitorTrackedUsers() {
@@ -788,7 +863,6 @@ async function monitorTrackedUsers() {
                 );
             }
 
-            // Small delay between users.
             await new Promise(
                 resolve =>
                     setTimeout(
@@ -805,7 +879,7 @@ async function monitorTrackedUsers() {
 }
 
 //==================================================
-// START BACKGROUND MONITOR
+// START MONITOR
 //==================================================
 
 setTimeout(
@@ -839,7 +913,7 @@ app.get(
                 "Roblox Player Lookup",
 
             version:
-                "5.0"
+                "6.0"
         });
     }
 );
@@ -897,14 +971,13 @@ app.get(
 
         try {
 
-            // Register immediately so this
-            // user stays monitored after lookup.
+            // Register for permanent presence monitoring.
             await registerUser(
                 userId
             );
 
             //==================================================
-            // FETCH PUBLIC ROBLOX INFORMATION
+            // FETCH PUBLIC DATA
             //==================================================
 
             const [
@@ -992,7 +1065,7 @@ app.get(
             }
 
             //==================================================
-            // UPDATE LAST ONLINE TRACKING
+            // PRESENCE TRACKING
             //==================================================
 
             const tracked =
@@ -1209,7 +1282,7 @@ app.listen(
         );
 
         console.log(
-            "ROBLOX PLAYER LOOKUP v5"
+            "ROBLOX PLAYER LOOKUP v6"
         );
 
         console.log(
@@ -1221,7 +1294,7 @@ app.listen(
         );
 
         console.log(
-            "Friends API enabled."
+            "Friends API + name resolution enabled."
         );
 
         console.log(
