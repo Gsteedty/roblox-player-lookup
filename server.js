@@ -1,77 +1,929 @@
 const express = require("express");
-const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
-app.use(express.json());
-
 const PORT = process.env.PORT || 3000;
 
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_KEY
-);
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-//==================================================
-// CONFIG
-//==================================================
+const trackedUsers = new Set();
 
-const MONITOR_INTERVAL = 2 * 60 * 1000;
+let monitoring = false;
 
 //==================================================
 // ROBLOX API HELPER
 //==================================================
 
-async function getJSON(url, options = {}) {
+async function robloxFetch(url, options = {}) {
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+
+    const text = await response.text();
+
+    let data = null;
+
     try {
-        const response = await fetch(url, {
-            ...options,
-            headers: {
-                Accept: "application/json",
-                ...(options.headers || {})
-            }
-        });
-
-        if (!response.ok) {
-            return {
-                available: false,
-                status: response.status,
-                data: null
-            };
-        }
-
-        return {
-            available: true,
-            status: response.status,
-            data: await response.json()
-        };
-    } catch (error) {
-        console.error("Roblox API error:", error);
-
-        return {
-            available: false,
-            status: 0,
-            data: null
-        };
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
     }
+
+    return {
+      available: response.ok,
+      status: response.status,
+      data
+    };
+
+  } catch (error) {
+    console.error("Roblox API error:", error);
+
+    return {
+      available: false,
+      status: 500,
+      data: null
+    };
+  }
 }
 
 //==================================================
-// ROBLOX DATA
+// USER
 //==================================================
 
 async function getUser(userId) {
-    return getJSON(
-        `https://users.roblox.com/v1/users/${userId}`
-    );
+  return robloxFetch(
+    `https://users.roblox.com/v1/users/${userId}`
+  );
 }
+
+//==================================================
+// AVATAR
+//==================================================
 
 async function getAvatar(userId) {
-    return getJSON(
-        `https://avatar.roblox.com/v2/avatar/users/${userId}/avatar`
-    );
+  return robloxFetch(
+    `https://avatar.roblox.com/v1/users/${userId}/avatar`
+  );
 }
 
+//==================================================
+// CURRENTLY WEARING
+//==================================================
+
 async function getCurrentlyWearing(userId) {
+  return robloxFetch(
+    `https://avatar.roblox.com/v1/users/${userId}/currently-wearing`
+  );
+}
+
+//==================================================
+// OUTFITS
+//==================================================
+
+async function getOutfits(userId) {
+  return robloxFetch(
+    `https://avatar.roblox.com/v2/avatar/users/${userId}/outfits`
+  );
+}
+
+//==================================================
+// GROUPS
+//==================================================
+
+async function getGroups(userId) {
+  return robloxFetch(
+    `https://groups.roblox.com/v2/users/${userId}/groups/roles`
+  );
+}
+
+//==================================================
+// FRIENDS
+//==================================================
+
+async function getFriends(userId) {
+  try {
+    const response = await fetch(
+      `https://friends.roblox.com/v1/users/${userId}/friends`
+    );
+
+    if (!response.ok) {
+      return {
+        available: false,
+        status: response.status,
+        data: []
+      };
+    }
+
+    const result = await response.json();
+
+    const friends = Array.isArray(result.data)
+      ? result.data
+      : [];
+
+    const normalizedFriends = friends.map(friend => ({
+      id: friend.id ?? null,
+      name: friend.name ?? null,
+      displayName: friend.displayName ?? null
+    }));
+
+    return {
+      available: true,
+      status: response.status,
+
+      data: {
+        previousPageCursor:
+          result.previousPageCursor ?? null,
+
+        nextPageCursor:
+          result.nextPageCursor ?? null,
+
+        data: normalizedFriends
+      }
+    };
+
+  } catch (error) {
+    console.error(
+      "Friends API error:",
+      error
+    );
+
+    return {
+      available: false,
+      status: 500,
+      data: []
+    };
+  }
+}
+
+//==================================================
+// FRIEND COUNT
+//==================================================
+
+async function getFriendCount(userId) {
+  return robloxFetch(
+    `https://friends.roblox.com/v1/users/${userId}/friends/count`
+  );
+}
+
+//==================================================
+// USERNAME HISTORY
+//==================================================
+
+async function getUsernameHistory(userId) {
+  return robloxFetch(
+    `https://users.roblox.com/v1/users/${userId}/username-history`
+  );
+}
+
+//==================================================
+// BADGES
+//==================================================
+
+async function getBadges(userId) {
+  return robloxFetch(
+    `https://badges.roblox.com/v1/users/${userId}/badges?limit=100&sortOrder=Desc`
+  );
+}
+
+//==================================================
+// CREATED EXPERIENCES
+//==================================================
+
+async function getCreatedGames(userId) {
+  return robloxFetch(
+    `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&limit=50&sortOrder=Desc`
+  );
+}
+
+//==================================================
+// FAVORITE EXPERIENCES
+//==================================================
+
+async function getFavoriteGames(userId) {
+  return robloxFetch(
+    `https://games.roblox.com/v2/users/${userId}/favorites?limit=50&sortOrder=Desc`
+  );
+}
+
+//==================================================
+// THUMBNAILS
+//==================================================
+
+async function getThumbnails(userId) {
+  return robloxFetch(
+    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png&isCircular=false`
+  );
+}
+
+//==================================================
+// PRESENCE
+//==================================================
+
+async function getPresenceObject(userId) {
+  try {
+    const response = await fetch(
+      "https://presence.roblox.com/v1/presence/users",
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json"
+        },
+
+        body: JSON.stringify({
+          userIds: [Number(userId)]
+        })
+      }
+    );
+
+    if (!response.ok) {
+      return {
+        available: false,
+        status: response.status,
+        data: null
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      available: true,
+      status: response.status,
+      data:
+        result.userPresences?.[0] || null
+    };
+
+  } catch (error) {
+    console.error(
+      "Presence API error:",
+      error
+    );
+
+    return {
+      available: false,
+      status: 500,
+      data: null
+    };
+  }
+}
+
+function isOnline(presence) {
+  if (!presence) {
+    return false;
+  }
+
+  return (
+    presence.userPresenceType === 1 ||
+    presence.userPresenceType === 2 ||
+    presence.userPresenceType === 3
+  );
+}
+
+//==================================================
+// SUPABASE
+//==================================================
+
+async function supabaseFetch(
+  path,
+  options = {}
+) {
+  if (
+    !SUPABASE_URL ||
+    !SUPABASE_KEY
+  ) {
+    return {
+      available: false,
+      data: null
+    };
+  }
+
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/${path}`,
+      {
+        ...options,
+
+        headers: {
+          "Content-Type":
+            "application/json",
+
+          "apikey":
+            SUPABASE_KEY,
+
+          "Authorization":
+            `Bearer ${SUPABASE_KEY}`,
+
+          ...(options.headers || {})
+        }
+      }
+    );
+
+    const text =
+      await response.text();
+
+    let data = null;
+
+    try {
+      data =
+        text
+          ? JSON.parse(text)
+          : null;
+    } catch {
+      data = text;
+    }
+
+    return {
+      available: response.ok,
+      status: response.status,
+      data
+    };
+
+  } catch (error) {
+    console.error(
+      "Supabase error:",
+      error
+    );
+
+    return {
+      available: false,
+      status: 500,
+      data: null
+    };
+  }
+}
+
+//==================================================
+// GET SAVED PRESENCE
+//==================================================
+
+async function getSavedPresence(userId) {
+  const result =
+    await supabaseFetch(
+      `presence_history?user_id=eq.${userId}&select=*`
+    );
+
+  if (
+    !result.available ||
+    !Array.isArray(result.data) ||
+    !result.data[0]
+  ) {
+    return null;
+  }
+
+  return result.data[0];
+}
+
+//==================================================
+// REGISTER USER
+//==================================================
+
+async function registerUser(userId) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return;
+  }
+
+  await supabaseFetch(
+    "presence_history",
+    {
+      method: "POST",
+
+      headers: {
+        "Prefer":
+          "resolution=merge-duplicates"
+      },
+
+      body: JSON.stringify({
+        user_id: Number(userId),
+
+        last_online: null,
+
+        last_status: "Unknown"
+      })
+    }
+  );
+}
+
+//==================================================
+// SAVE ONLINE PRESENCE
+//==================================================
+
+async function saveOnlinePresence(userId) {
+  await supabaseFetch(
+    `presence_history?user_id=eq.${userId}`,
+    {
+      method: "PATCH",
+
+      body: JSON.stringify({
+        last_online:
+          new Date().toISOString(),
+
+        last_status:
+          "Online",
+
+        updated_at:
+          new Date().toISOString()
+      })
+    }
+  );
+}
+
+//==================================================
+// SAVE OFFLINE PRESENCE
+//==================================================
+
+async function saveOfflinePresence(userId) {
+  await supabaseFetch(
+    `presence_history?user_id=eq.${userId}`,
+    {
+      method: "PATCH",
+
+      body: JSON.stringify({
+        last_status:
+          "Offline",
+
+        updated_at:
+          new Date().toISOString()
+      })
+    }
+  );
+}
+
+//==================================================
+// TRACK USER
+//==================================================
+
+async function trackUser(userId) {
+  userId =
+    Number(userId);
+
+  if (!Number.isFinite(userId)) {
+    return null;
+  }
+
+  trackedUsers.add(userId);
+
+  await registerUser(userId);
+
+  const presence =
+    await getPresenceObject(userId);
+
+  const saved =
+    await getSavedPresence(userId);
+
+  if (!presence.available) {
+    return {
+      online: null,
+
+      status:
+        saved?.last_status ||
+        "Unknown",
+
+      lastOnline:
+        saved?.last_online ||
+        null
+    };
+  }
+
+  const online =
+    isOnline(presence.data);
+
+  if (online) {
+    await saveOnlinePresence(
+      userId
+    );
+
+    return {
+      online: true,
+
+      status: "Online",
+
+      lastOnline:
+        new Date().toISOString()
+    };
+  }
+
+  await saveOfflinePresence(
+    userId
+  );
+
+  return {
+    online: false,
+
+    status: "Offline",
+
+    lastOnline:
+      saved?.last_online ||
+      null
+  };
+}
+
+//==================================================
+// AUTOMATIC MONITOR
+//==================================================
+
+async function monitorUsers() {
+  if (monitoring) {
+    return;
+  }
+
+  monitoring = true;
+
+  try {
+    const result =
+      await supabaseFetch(
+        "presence_history?select=user_id"
+      );
+
+    if (
+      result.available &&
+      Array.isArray(result.data)
+    ) {
+      for (const row of result.data) {
+        if (!row.user_id) {
+          continue;
+        }
+
+        trackedUsers.add(
+          Number(row.user_id)
+        );
+      }
+    }
+
+    for (const userId of trackedUsers) {
+      try {
+        await trackUser(userId);
+      } catch (error) {
+        console.error(
+          `Monitor error for ${userId}:`,
+          error
+        );
+      }
+
+      await new Promise(
+        resolve =>
+          setTimeout(resolve, 250)
+      );
+    }
+
+  } finally {
+    monitoring = false;
+  }
+}
+
+//==================================================
+// PLAYER API
+//==================================================
+
+app.get(
+  "/api/player/:userId",
+  async (req, res) => {
+
+    const userId =
+      Number(req.params.userId);
+
+    if (
+      !Number.isFinite(userId) ||
+      userId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Invalid Roblox User ID."
+      });
+    }
+
+    try {
+
+      const [
+        identity,
+        avatar,
+        wearing,
+        outfits,
+        groups,
+        friends,
+        friendCount,
+        usernameHistory,
+        badges,
+        createdGames,
+        favoriteGames,
+        thumbnails
+      ] =
+        await Promise.all([
+          getUser(userId),
+
+          getAvatar(userId),
+
+          getCurrentlyWearing(
+            userId
+          ),
+
+          getOutfits(userId),
+
+          getGroups(userId),
+
+          getFriends(userId),
+
+          getFriendCount(userId),
+
+          getUsernameHistory(
+            userId
+          ),
+
+          getBadges(userId),
+
+          getCreatedGames(
+            userId
+          ),
+
+          getFavoriteGames(
+            userId
+          ),
+
+          getThumbnails(userId)
+        ]);
+
+      // Track the user independently
+      // of whether the requester is online.
+      const presence =
+        await trackUser(userId);
+
+      if (
+        !identity.available ||
+        !identity.data
+      ) {
+        return res.status(404).json({
+          success: false,
+          error:
+            "Roblox user not found."
+        });
+      }
+
+      return res.json({
+
+        success: true,
+
+        identity: {
+          available:
+            identity.available,
+
+          status:
+            identity.status,
+
+          data:
+            identity.data
+        },
+
+        avatar: {
+          available:
+            avatar.available,
+
+          status:
+            avatar.status,
+
+          data:
+            avatar.data
+        },
+
+        currentlyWearing: {
+          available:
+            wearing.available,
+
+          status:
+            wearing.status,
+
+          data:
+            wearing.data
+        },
+
+        outfits: {
+          available:
+            outfits.available,
+
+          status:
+            outfits.status,
+
+          data:
+            outfits.data
+        },
+
+        groups: {
+          available:
+            groups.available,
+
+          status:
+            groups.status,
+
+          data:
+            groups.data
+        },
+
+        friends: {
+          available:
+            friends.available,
+
+          status:
+            friends.status,
+
+          data:
+            friends.data
+        },
+
+        friendCount: {
+          available:
+            friendCount.available,
+
+          status:
+            friendCount.status,
+
+          data:
+            friendCount.data
+        },
+
+        usernameHistory: {
+          available:
+            usernameHistory.available,
+
+          status:
+            usernameHistory.status,
+
+          data:
+            usernameHistory.data
+        },
+
+        badges: {
+          available:
+            badges.available,
+
+          status:
+            badges.status,
+
+          data:
+            badges.data
+        },
+
+        createdGames: {
+          available:
+            createdGames.available,
+
+          status:
+            createdGames.status,
+
+          data:
+            createdGames.data
+        },
+
+        favoriteGames: {
+          available:
+            favoriteGames.available,
+
+          status:
+            favoriteGames.status,
+
+          data:
+            favoriteGames.data
+        },
+
+        thumbnails: {
+          available:
+            thumbnails.available,
+
+          status:
+            thumbnails.status,
+
+          data:
+            thumbnails.data
+        },
+
+        presence: {
+          available:
+            presence !== null,
+
+          online:
+            presence?.online ?? null,
+
+          status:
+            presence?.status ??
+            "Unknown",
+
+          lastOnline:
+            presence?.lastOnline ??
+            null
+        },
+
+        limitations: {
+          presence:
+            "Last online information is based on when this service observed the account online. Historical Roblox presence data is not publicly available for arbitrary users."
+        }
+
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Player lookup error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+
+        error:
+          "Failed to retrieve player information."
+      });
+    }
+  }
+);
+
+//==================================================
+// HEALTH
+//==================================================
+
+app.get(
+  "/health",
+  (req, res) => {
+    res.json({
+      status: "online",
+      service:
+        "Roblox Player Lookup",
+      version: "5.0"
+    });
+  }
+);
+
+//==================================================
+// ROOT
+//==================================================
+
+app.get(
+  "/",
+  (req, res) => {
+    res.json({
+      status: "online",
+      service:
+        "Roblox Player Lookup",
+      version: "5.0"
+    });
+  }
+);
+
+//==================================================
+// START SERVER
+//==================================================
+
+app.listen(
+  PORT,
+  () => {
+
+    console.log(
+      "================================"
+    );
+
+    console.log(
+      "ROBLOX PLAYER LOOKUP SERVER"
+    );
+
+    console.log(
+      `Port: ${PORT}`
+    );
+
+    console.log(
+      "Version: 5.0"
+    );
+
+    console.log(
+      "Presence monitoring enabled."
+    );
+
+    console.log(
+      "Friends API enabled."
+    );
+
+    console.log(
+      "================================"
+    );
+
+    // Initial monitoring
+    setTimeout(
+      () => {
+        monitorUsers();
+      },
+      10000
+    );
+
+    // Monitor every 2 minutes
+    setInterval(
+      () => {
+        monitorUsers();
+      },
+      2 * 60 * 1000
+    );
+  }
+);async function getCurrentlyWearing(userId) {
     return getJSON(
         `https://avatar.roblox.com/v1/users/${userId}/currently-wearing`
     );
