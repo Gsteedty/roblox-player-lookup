@@ -12,7 +12,7 @@ const supabase = createClient(
 );
 
 //==================================================
-// HELPERS
+// ROBLOX API HELPER
 //==================================================
 
 async function getJSON(url, options = {}) {
@@ -20,7 +20,7 @@ async function getJSON(url, options = {}) {
         const response = await fetch(url, {
             ...options,
             headers: {
-                "Accept": "application/json",
+                Accept: "application/json",
                 ...(options.headers || {})
             }
         });
@@ -45,7 +45,11 @@ async function getJSON(url, options = {}) {
             data: null
         };
     }
-    }
+}
+
+//==================================================
+// ROBLOX DATA
+//==================================================
 
 async function getUser(userId) {
     return getJSON(
@@ -150,49 +154,40 @@ async function getPresence(userId) {
 }
 
 //==================================================
-// PRESENCE HISTORY
+// PRESENCE DATABASE
 //==================================================
 
 async function getSavedPresence(userId) {
-    try {
-        const { data, error } = await supabase
-            .from("presence_history")
-            .select("*")
-            .eq("user_id", userId)
-            .maybeSingle();
+    const { data, error } = await supabase
+        .from("presence_history")
+        .select("*")
+        .eq("user_id", userId)
+        .maybeSingle();
 
-        if (error) {
-            console.error("Supabase read error:", error);
-            return null;
-        }
-
-        return data;
-    } catch (error) {
-        console.error("Presence read error:", error);
+    if (error) {
+        console.error("Supabase read error:", error);
         return null;
     }
+
+    return data;
 }
 
 async function savePresence(userId, status, lastOnline) {
-    try {
-        const { error } = await supabase
-            .from("presence_history")
-            .upsert({
-                user_id: userId,
-                last_status: status,
-                last_online: lastOnline,
-                updated_at: new Date().toISOString()
-            });
+    const { error } = await supabase
+        .from("presence_history")
+        .upsert({
+            user_id: userId,
+            last_online: lastOnline,
+            last_status: status,
+            updated_at: new Date().toISOString()
+        });
 
-        if (error) {
-            console.error("Supabase write error:", error);
-        }
-    } catch (error) {
-        console.error("Presence save error:", error);
+    if (error) {
+        console.error("Supabase write error:", error);
     }
 }
 
-function parsePresence(presence) {
+function getPresenceObject(presence) {
     if (
         !presence ||
         !presence.data ||
@@ -205,8 +200,8 @@ function parsePresence(presence) {
     return presence.data.userPresences[0];
 }
 
-async function processPresence(userId, presence) {
-    const current = parsePresence(presence);
+async function trackPresence(userId, presence) {
+    const current = getPresenceObject(presence);
 
     if (!current) {
         return {
@@ -215,16 +210,6 @@ async function processPresence(userId, presence) {
         };
     }
 
-    const saved = await getSavedPresence(userId);
-
-    /*
-        Roblox presenceType:
-        0 = Offline
-        1 = Online
-        2 = In Game
-        3 = In Studio
-    */
-
     const presenceType = current.userPresenceType;
 
     const online =
@@ -232,9 +217,12 @@ async function processPresence(userId, presence) {
         presenceType === 2 ||
         presenceType === 3;
 
-    let lastOnline = saved ? saved.last_online : null;
+    const saved = await getSavedPresence(userId);
 
-    // If currently online, this is our newest observation.
+    let lastOnline = saved
+        ? saved.last_online
+        : null;
+
     if (online) {
         lastOnline = new Date().toISOString();
 
@@ -317,7 +305,7 @@ app.get("/api/player/:userId", async (req, res) => {
         }
 
         const trackedPresence =
-            await processPresence(
+            await trackPresence(
                 userId,
                 presence
             );
@@ -338,7 +326,6 @@ app.get("/api/player/:userId", async (req, res) => {
             presence: {
                 available: presence.available,
                 data: presence.data,
-
                 tracked: trackedPresence
             },
 
@@ -396,7 +383,7 @@ app.get("/api/player/:userId", async (req, res) => {
 
             limitations: {
                 message:
-                    "This lookup only returns information exposed by Roblox's public APIs. Historical presence is based on observations recorded by this service."
+                    "Historical presence is based on observations recorded by this service."
             }
         });
 
@@ -422,232 +409,11 @@ app.get("/health", (req, res) => {
 });
 
 //==================================================
-// START
+// START SERVER
 //==================================================
 
 app.listen(PORT, () => {
     console.log(
         `Roblox Player Lookup v3 running on port ${PORT}`
-    );
-});}
-
-async function getFriendCount(userId) {
-    return getJSON(
-        `https://friends.roblox.com/v1/users/${userId}/friends/count`
-    );
-}
-
-async function getUsernameHistory(userId) {
-    return getJSON(
-        `https://users.roblox.com/v1/users/${userId}/username-history?limit=100&sortOrder=Desc`
-    );
-}
-
-async function getBadges(userId) {
-    return getJSON(
-        `https://accountinformation.roblox.com/v1/users/${userId}/roblox-badges`
-    );
-}
-
-async function getCreatedGames(userId) {
-    return getJSON(
-        `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&sortOrder=Asc&limit=50`
-    );
-}
-
-async function getFavoriteGames(userId) {
-    return getJSON(
-        `https://games.roblox.com/v2/users/${userId}/favorite/games?sortOrder=Asc&limit=50`
-    );
-}
-
-async function getThumbnails(userId) {
-    const urls = {
-        headshot:
-            `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png&isCircular=false`,
-
-        bust:
-            `https://thumbnails.roblox.com/v1/users/avatar-bust?userIds=${userId}&size=420x420&format=Png&isCircular=false`,
-
-        avatar:
-            `https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=720x720&format=Png&isCircular=false`
-    };
-
-    const results = {};
-
-    for (const [name, url] of Object.entries(urls)) {
-        results[name] = await getJSON(url);
-    }
-
-    return results;
-}
-
-async function getPresence(userId) {
-    return getJSON(
-        "https://presence.roblox.com/v1/presence/users",
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                userIds: [userId]
-            })
-        }
-    );
-}
-
-app.get("/", (req, res) => {
-    res.json({
-        status: "online",
-        service: "Roblox Player Lookup",
-        version: "2.0"
-    });
-});
-
-app.get("/api/player/:userId", async (req, res) => {
-    const userId = Number(req.params.userId);
-
-    if (!Number.isInteger(userId) || userId <= 0) {
-        return res.status(400).json({
-            success: false,
-            error: "Invalid User ID."
-        });
-    }
-
-    try {
-        const [
-            user,
-            avatar,
-            currentlyWearing,
-            outfits,
-            groups,
-            friends,
-            friendCount,
-            usernameHistory,
-            badges,
-            createdGames,
-            favoriteGames,
-            thumbnails,
-            presence
-        ] = await Promise.all([
-            getUser(userId),
-            getAvatar(userId),
-            getCurrentlyWearing(userId),
-            getOutfits(userId),
-            getGroups(userId),
-            getFriends(userId),
-            getFriendCount(userId),
-            getUsernameHistory(userId),
-            getBadges(userId),
-            getCreatedGames(userId),
-            getFavoriteGames(userId),
-            getThumbnails(userId),
-            getPresence(userId)
-        ]);
-
-        if (!user.available || !user.data) {
-            return res.status(404).json({
-                success: false,
-                error: "Roblox user not found."
-            });
-        }
-
-        res.json({
-            success: true,
-
-            lookup: {
-                userId: userId,
-                retrievedAt: new Date().toISOString()
-            },
-
-            identity: {
-                available: user.available,
-                data: user.data
-            },
-
-            presence: {
-                available: presence.available,
-                data: presence.data
-            },
-
-            avatar: {
-                available: avatar.available,
-                data: avatar.data
-            },
-
-            currentlyWearing: {
-                available: currentlyWearing.available,
-                data: currentlyWearing.data
-            },
-
-            outfits: {
-                available: outfits.available,
-                data: outfits.data
-            },
-
-            groups: {
-                available: groups.available,
-                data: groups.data
-            },
-
-            friends: {
-                available: friends.available,
-                data: friends.data
-            },
-
-            friendCount: {
-                available: friendCount.available,
-                data: friendCount.data
-            },
-
-            usernameHistory: {
-                available: usernameHistory.available,
-                data: usernameHistory.data
-            },
-
-            badges: {
-                available: badges.available,
-                data: badges.data
-            },
-
-            createdExperiences: {
-                available: createdGames.available,
-                data: createdGames.data
-            },
-
-            favoriteExperiences: {
-                available: favoriteGames.available,
-                data: favoriteGames.data
-            },
-
-            thumbnails: thumbnails,
-
-            limitations: {
-                message:
-                    "This lookup only returns information exposed by Roblox's public APIs. Private or unavailable information is not reconstructed or guessed."
-            }
-        });
-
-    } catch (error) {
-        console.error("Lookup error:", error);
-
-        res.status(500).json({
-            success: false,
-            error: "Unexpected lookup error."
-        });
-    }
-});
-
-app.get("/health", (req, res) => {
-    res.json({
-        online: true,
-        timestamp: new Date().toISOString()
-    });
-});
-
-app.listen(PORT, () => {
-    console.log(
-        `Roblox Player Lookup v2 running on port ${PORT}`
     );
 });
